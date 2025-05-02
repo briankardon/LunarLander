@@ -91,9 +91,8 @@ class Particles:
         return not (self.life <= 0 and len(self.x) == 0)
 
 class Sprite(pygame.sprite.Sprite):
-    def __init__(self, spriteRegistrar, # Function for the sprite to register itself with the game manager
-                    messageRegistrar=None, # Function for the sprite to register messages
-                    particleRegistrar=None, # Function for the sprite to register particles
+    def __init__(self,
+                    game,
                     position=np.array([0, 0], dtype='int'),
                     size=None,
                     orientation=None,
@@ -104,13 +103,16 @@ class Sprite(pygame.sprite.Sprite):
                     noCollideIDs=[],
                     life=100):
         pygame.sprite.Sprite.__init__(self)
-        self.spriteRegistrar = spriteRegistrar
-        self.particleRegistrar = particleRegistrar
-        self.messageRegistrar = messageRegistrar
-        self.ID = self.spriteRegistrar(self)  # Unique integer > 0 given by game
+        self.game = game
+        self.particleRegistrar = game.registerParticles
+        self.messageRegistrar = game.registerMessage
         self.position = np.array(position)
 
-        self.orientation = self.handleArgumentRange(orientation, 0, 0, 2*np.pi)
+        self._orientation = self.handleArgumentRange(orientation, 0, 0, 2*np.pi)
+        self._lastOrientation = self._orientation
+        self._scale = 1
+        self._lastScale = self._scale
+
         self.angularVelocity = self.handleArgumentRange(angularVelocity, 0, -0.1, 0.1)
 
         if velocity is None:
@@ -126,6 +128,8 @@ class Sprite(pygame.sprite.Sprite):
         self.thrust = None
         self.size = size
         self.image = image
+        self.mask = None
+        self.rect = None
         self.collisionMask = None
         self.imageBackup = None
         self.destructing = False
@@ -152,22 +156,63 @@ class Sprite(pygame.sprite.Sprite):
     def update(self, gravity):
         if self.life <= 0:
             return
-        self.orientation += self.angularVelocity
+        self.incrementOrientation(self.angularVelocity)
         self.velocity += gravity
         if self.thrust is not None:
             self.velocity += self.thrust
         self.position += self.velocity
+        self.updateRect()
 
-    def handleSpriteCollision(self, sprite):
-        if sprite.ID not in self.noCollideIDs:
-            self.destroy()
-    def handleGroundCollision(self, normal):
+    def updateRect(self):
+        if self.image is not None:
+            position = self.game.world2Screen(*self.position)
+            self.rect = self.image.get_rect(center=position)
+    def updateMask(self):
+        if self.image is not None:
+            self.mask = pygame.mask.from_surface(self.image)
+
+    def setOrientation(self, orientation):
+        self._orientation = orientation
+        orientationChanged = (self._lastOrientation != orientation)
+        if orientationChanged:
+            # Orientation changed - update image and rect
+            self.image = pygame.transform.rotozoom(
+                            self.imageBackup,
+                            self.getOrientation(),
+                            self.getScale())
+            self.updateRect()
+        self._lastOrientation = np.mod(orientation, 360)
+        return orientationChanged
+    def incrementOrientation(self, deltaOrientation):
+        self.setOrientation(self._orientation + deltaOrientation)
+    def getOrientation(self):
+        return self._orientation
+
+    def setScale(self, scale):
+        self._scale = scale
+        if self._lastScale != scale:
+            # Scale changed - update image and rect
+            self.image = self.backupImage
+        self._lastScale = scale
+    def incrementScale(self, deltaScale):
+        self.setScale(self._scale + deltaScale)
+    def multiplyScale(self, factorScale):
+        self.setScale(self._scale * factorScale)
+    def getScale(self):
+        return self._scale
+
+    def handleSpriteCollision(self, sprite, collision_point=None):
+        pass
+
+    def handleGroundCollision(self, normal=None):
         if self.bouncy:
             self.bounce(normal)
         else:
+            print('sprite hit ground')
             self.destroy()
     def handlePadCollision(self, *args):
         self.destroy()
+        print('sprite hit pad')
 
     def bounce(self, normal):
         vNormal = self.velocity.dot(normal) * normal
@@ -176,12 +221,7 @@ class Sprite(pygame.sprite.Sprite):
     def generateImage(self):
         radius = int(max(self.size) / 2)
         self.image = pygame.Surface([radius*2, radius*2])
-        self.generateCollisionMask()
         self.backupImage()
-
-    def generateCollisionMask(self):
-        # Make collision mask based on image
-        self.collisionMask = pygame.mask.from_surface(self.image)
 
     def backupImage(self):
         self.imageBackup = self.image.copy()
@@ -192,8 +232,6 @@ class Sprite(pygame.sprite.Sprite):
     def resetState(self):
         self.destructing = False
         self.life = self.maxLife
-        # Re-register self with game under new ID
-        self.ID = self.spriteRegistrar(self)
 
     def updateState(self):
         if self.destructing:
@@ -205,53 +243,20 @@ class Sprite(pygame.sprite.Sprite):
         self.velocity = np.array([0, 0], dtype='float')
         self.angularVelocity = 0
 
-    def draw(self, screen, scale=1, coordinateTransform=None, position=None,
-            orientation=None, worldUnits=True, image=None, reshape=True):
-        if self.life <= 0:
-            return
-        if position is None:
-            position = self.position
+    def draw(self, screen, scale=1, orientation=None):
         if orientation is None:
-            orientation = self.orientation
-        if image is None:
-            image = self.image
+            orientation = self.getOrientation()
 
-        drawImage(image, screen, scale=scale,
-            coordinateTransform=coordinateTransform, position=position,
-            orientation=orientation, worldUnits=worldUnits, reshape=reshape)
+        screen.blit(self.image, self.rect)
 
     def checkOverlap(self, collisionMap, noCollideIDs=[], scale=1,
             coordinateTransform=None, position=None, orientation=None,
-            worldUnits=True, collisionMask=None, reshape=True,
+            worldUnits=True, collisionMask=None,
             calculate_normal=True, calculate_overlap=True,
             calculate_overlapIDs=True):
 
-
             # NEEDS WORK
             return False
-        # if position is None:
-        #     position = self.position
-        # if orientation is None:
-        #     orientation = self.orientation
-        # if collisionMask is None:
-        #     collisionMask = self.collisionMask
-        #
-        # overlap, overlapIDs, normal, onScreen = drawImage(
-        #     collisionMask, collisionMap, scale=scale,
-        #     coordinateTransform=coordinateTransform, position=position,
-        #     orientation=orientation, worldUnits=worldUnits, reshape=reshape,
-        #     calculate_normal=calculate_normal, calculate_overlap=calculate_overlap,
-        #     calculate_overlapIDs=calculate_overlapIDs, interpolate=False)
-        #
-        # if overlap > 0:
-        #     if len(self.noCollideIDs) > 0:
-        #         # Need to remove any allowable collision IDs from list
-        #         overlapIDs = {id for id in overlapIDs if id not in self.noCollideIDs}
-        #         if len(overlapIDs) == 0:
-        #             # If no overlap IDs remain, then there was no collision
-        #             overlap = 0
-        #
-        # return overlap, overlapIDs, normal, onScreen
 
     def destroy(self):
         self.destructing = True
@@ -260,14 +265,14 @@ class Missile(Sprite):
     def __init__(self, *args, thrust=0.1, **kwargs):
         super().__init__(*args, **kwargs)
         self.angularVelocity = 0
-        fireAngle = (self.orientation-90) * np.pi / 180
+        fireAngle = (self.getOrientation()-90) * np.pi / 180
         self.thrust = thrust * np.array([np.cos(fireAngle), np.sin(fireAngle)])
 
         color1 = [0, 0, 200]
         color2 = [150, 150, 255]
         self.explodeColors = createColorRange(color1, color2, 15)
 
-        self.generateCollisionMask()
+        self.updateMask()
         self.backupImage()
 
     # def updateState(self):
@@ -281,6 +286,14 @@ class Missile(Sprite):
         ))
         self.destructing = True
 
+    def handleSpriteCollision(self, sprite, collision_point=None):
+        if isinstance(sprite, Asteroid):
+            self.destroy()
+            print('Missile hit asteroid')
+    def handleGroundCollision(self, normal=None):
+        self.destroy()
+        print('Missile hit ground')
+
 class Asteroid(Sprite):
     def __init__(self, *args, radius=(3, 15), color=[255, 255, 255], **kwargs):
         super().__init__(*args, **kwargs)
@@ -293,14 +306,14 @@ class Asteroid(Sprite):
         self.generateCoordinates(radius)
         self.size = [radius*2, radius*2]
         self.generateImage()
+        self.updateMask()
 
     def generateImage(self):
         super().generateImage()
         radius = int(max(self.size)/2)
         x = (self.x + radius).astype('int').tolist()
         y = (self.y + radius).astype('int').tolist()
-        pygame.draw.lines(self.image, self.color, list(zip(x, y)))
-        self.generateCollisionMask()
+        pygame.draw.lines(self.image, self.color, True, list(zip(x, y)))
         self.backupImage()
 
     def generateCoordinates(self, radius):
@@ -310,6 +323,15 @@ class Asteroid(Sprite):
         radii = radius * np.random.uniform(0.6, 1.4, size=numPoints)
         self.x = radii * np.cos(angles)
         self.y = radii * np.sin(angles)
+
+    def handleSpriteCollision(self, sprite, collisionPoint=None):
+        if isinstance(sprite, Missile):
+            self.destroy()
+            print('Asteroid hit missile')
+
+    def handleGroundCollision(self, normal=None):
+        self.destroy()
+        print('Asteroid hit ground')
 
 class PowerUp(Sprite):
     def __init__(self, *args, powerupType=None, meanSpeed=0.1,
@@ -326,15 +348,22 @@ class PowerUp(Sprite):
         self.type = powerupType
         self.captured = False
         self.lander = None
-        self.generateCollisionMask()
         self.backupImage()
+        self.updateMask()
+
+    def handleSpriteCollision(self, sprite, collisionPoint=None):
+        self.destroy()
+        print('powerup hit sprite')
+
+    def handleGroundCollision(self, normal=None):
+        self.destroy()
+        print('powerup hit ground')
 
 class Lander(Sprite):
-    def __init__(self, spriteRegistrar, voidRegistrar, *args, **kwargs):
-        super().__init__(spriteRegistrar, *args, **kwargs)
-        self.spriteRegistrar = spriteRegistrar
-        self.voidRegistrar = voidRegistrar
-        self.thrusterPower = 0.1
+    def __init__(self, game, *args, **kwargs):
+        super().__init__(game, *args, **kwargs)
+        self.voidRegistrar = game.registerVoid
+        self.thrusterPower = 0.01
         self.maxFuel = 150 # 15
         self.fuel = self.maxFuel
         self.radius = None
@@ -349,6 +378,9 @@ class Lander(Sprite):
         self.missileCount = 0
         self.createRotationMatrix()
         self.generateImage()
+        self.backupImage()
+        self.updateMask()
+        self.updateRect()
         self.phaseOutTime = 0
         self.phaseOutColors = createColorRange([255, 200, 200], [255, 50, 50], 15)
         self.airbagTime = 0
@@ -358,24 +390,23 @@ class Lander(Sprite):
 
     def fireRCS(self, amount):
         if self.fuel > 0:
+            power = self.thrusterPower*12
             # Command fire
-            self.angularVelocity += amount
+            self.angularVelocity += amount * power
             # Auto-stabilize
-            self.useFuel(self.thrusterPower/10)
+            self.useFuel(power)
 
-    def handleSpriteCollision(self, sprite):
-        if sprite.ID not in self.noCollideIDs:
-            if isinstance(sprite, PowerUp):
-                # It's a powerup
-                self.capturePowerup(sprite)
-                sprite.destroy()
-            elif isinstance(sprite, Missile):
-                # It's a missile
-                pass
-            else:
-                self.setCrashed()
-
-    def handleGroundCollision(self, normal):
+    def handleSpriteCollision(self, sprite, collisionPoint=None):
+        if isinstance(sprite, PowerUp):
+            # It's a powerup
+            self.capturePowerup(sprite)
+        elif isinstance(sprite, Missile):
+            # It's a missile
+            pass
+        else:
+            self.setCrashed()
+            print('lander hit sprite')
+    def handleGroundCollision(self, normal=None):
         if self.phaseOutTime > 0:
             return
         elif self.bouncy:
@@ -392,7 +423,7 @@ class Lander(Sprite):
             if self.speed < maxSpeed:
                 # Speed is ok, how's angle
                 maxTilt = 10
-                if abs(self.orientation) < maxTilt or abs(self.orientation - 360) < maxTilt:
+                if abs(self.getOrientation()) < maxTilt or abs(self.getOrientation() - 360) < maxTilt:
                     notes = 'Success!'
                     # condition1 = self.position[0] - self.radius*0.8 >= self.padX0s
                     # condition2 = self.position[0] + self.radius*0.8 <= self.padX1s
@@ -480,11 +511,10 @@ class Lander(Sprite):
         velocity = self.velocity.copy()
 
         newMissile = Missile(
-            self.spriteRegistrar,
-            particleRegistrar=self.particleRegistrar,
+            game,
             thrust=0.1,
             image=MISSILE_IMAGE.copy(),
-            orientation=self.orientation,
+            orientation=self.getOrientation(),
             position=self.position.copy(),
             velocity=velocity,
             noCollideIDs=[self.ID],
@@ -492,7 +522,7 @@ class Lander(Sprite):
 
     def fireLaser(self):
         origin = self.position.copy()
-        orientation = self.orientation
+        orientation = self.getOrientation()
         width = 40
         length = 600
         void = LaserTunnel(origin, orientation+-90, width, length)
@@ -547,7 +577,7 @@ class Lander(Sprite):
         if not self.isLanded():
             super().update(*args, **kwargs)
             if not (self.angularVelocity == 0):
-                self.setOrientation(np.mod(self.orientation + self.angularVelocity, 360))
+                self.incrementOrientation(self.angularVelocity)
                 if self.fuel > 0:
                     # If fuel remains, auto-stabilize orientation
                     self.angularVelocity = self.angularVelocity * 0.9
@@ -566,59 +596,44 @@ class Lander(Sprite):
         self.setOrientation(0)
 
     def generateImage(self):
-        image = np.array(
-            [
-                [0, 0, 0, 0, 0, 0, 0, 0],
-                [0, 0, 0, 1, 1, 0, 0, 0],
-                [0, 0, 1, 1, 1, 1, 0, 0],
-                [0, 0, 1, 1, 1, 1, 0, 0],
-                [0, 1, 0, 1, 1, 0, 1, 0],
-                [1, 0, 0, 1, 1, 0, 0, 1],
-                [1, 0, 1, 1, 1, 1, 0, 1],
-                [1, 0, 0, 0, 0, 0, 0, 1],
-            ], dtype='uint8') * 255
-        image = np.rot90(image)
-        # Pad array so lander can be rotated without getting cropped
-        maxSize = max(image.shape)
-        # rotationPadding = int(np.ceil(maxSize * (np.sqrt(2)-1)/2))
-        # self.image = np.pad(self.image, pad_width=((rotationPadding, rotationPadding), (rotationPadding, rotationPadding)))
+        self.image = LANDER_ICON.convert_alpha()
+        # # Add 3 color channels to lander image
+        # self.image = pygame.Surface(self.image.shape[::-1], pygame.SRCALPHA)
 
-        # Add 3 color channels to lander image
-        self.image = pygame.Surface(image.shape[::-1], pygame.SRCALPHA)
-        image = np.stack((image, image, image), axis=2)
-        pygame.pixelcopy.array_to_surface(self.image, image)
-
-        # Scale up lander image so it's bigger
-        scale = 3
-        self.image = pygame.transform.scale_by(self.image, scale)
-        self.radius = maxSize*scale/2
+        # scale = 3
+        # self.image = pygame.transform.scale_by(self.image, scale)
+        self.radius = max(self.image.get_size())
         self.backupImage()
-        self.generateCollisionMask()
+
+    def setOrientation(self, orientation):
+        orientationChanged = super().setOrientation(orientation)
+        if orientationChanged:
+            self.createRotationMatrix()
 
     def createRotationMatrix(self):
-        self.rotationMatrix = makeRotationMatrix(self.orientation)
+        self.rotationMatrix = makeRotationMatrix((- self.getOrientation()))
 
-    def drawExhaustPlume(self, screen, coordinateTransform=None):
-        size = min([self.exhaustPlume, 10])
+    def drawExhaustPlume(self, screen):
+        size = self.exhaustPlume
 
         if size > 0:
-            offset = -self.radius*0.6
+            offset = -self.radius*0.3
             pt0 = (self.position - self.rotationMatrix.dot([-size*0.5, offset]))
             pt1 = (self.position - self.rotationMatrix.dot([0, -(self.radius*0.5 + size) + offset]))
             pt2 = (self.position - self.rotationMatrix.dot([size*0.5, offset]))
 
             x, y = list(zip(*[pt0, pt1, pt2]))
 
-            if coordinateTransform is not None:
-                x, y = coordinateTransform(x, y, integer=True, asList=False)
+            x, y = self.game.world2Screen(x, y, integer=True, asList=False)
+            pt0, pt1, pt2 = list(zip(x, y))
 
             pygame.draw.lines(screen, [100, 100, 255], False, [pt0, pt1, pt2])
 
     def fireThrusters(self):
         if self.fuel > 0 and not self.destructing:
-            angle = (self.orientation - 90) * np.pi / 180
+            angle = (270 - self.getOrientation()) * np.pi / 180
             self.velocity += [self.thrusterPower * np.cos(angle), self.thrusterPower * np.sin(angle)]
-            self.exhaustPlume += 2
+            self.exhaustPlume = min(self.exhaustPlume+1, self.radius/3)
             self.useFuel(self.thrusterPower)
             self.setLanded(False)
 
@@ -635,28 +650,22 @@ class Lander(Sprite):
                     size=1)
             )
 
-    def setOrientation(self, angle):
-        self.orientation = angle
-        self.createRotationMatrix()
-
     def destroy(self):
         super().destroy()
+        print('lander destroyed')
+        breakpoint()
         self.exhaustPlume = 0
 
     def updateState(self):
         super().updateState()
         if self.exhaustPlume > 0:
-            self.exhaustPlume = max([0, self.exhaustPlume - 0.5])
+            self.exhaustPlume = max([0, self.exhaustPlume - 2])
         if self.phaseOutTime > 0:
             self.phaseOutTime -= 1
 
-    def draw(self, screen, scale=1, coordinateTransform=None, position=None,
-            orientation=None, worldUnits=True, image=None, reshape=False):
-
-            self.drawExhaustPlume(screen, coordinateTransform=coordinateTransform)
-
-            return super().draw(screen, scale=scale, coordinateTransform=coordinateTransform, position=position,
-                    orientation=orientation, worldUnits=worldUnits, image=image, reshape=reshape)
+    def draw(self, screen):
+        self.drawExhaustPlume(screen)
+        return super().draw(screen)
 
 class Message:
     def __init__(self,
@@ -760,21 +769,18 @@ class LunarLanderGame:
         self.h = 800
         self.clock = pygame.time.Clock()
         self.screen = pygame.display.set_mode((self.w, self.h))
-        self.collisionMap = None
         self.window_name = 'screen'
         self.screenCenter = np.array([0, 0])
         self.screenScale = 1
         self.groundHeight = 200
         self.maxGroundDepth = 100
+
         self.ground = pygame.sprite.Sprite()
         self.pads = pygame.sprite.Group()
-        # self.pads = []
-        # self.groundX = None
-        # self.groundY = None
-        # self.padX0s = None
-        # self.padX1s = None
-        # self.padY0s = None
-        # self.padY1s = None
+        self.asteroids = pygame.sprite.Group()
+        self.powerups = pygame.sprite.Group()
+        self.allEntities = pygame.sprite.Group()
+
         self.gravity = np.array([0, 0.002], dtype='float')
         self.landerThumbnail = None
         self.landerThumbnailScale = None
@@ -792,17 +798,12 @@ class LunarLanderGame:
         self.selectedPowerup = 0
 
         self.nextID = 1
-        self.spriteIDMap = {}
-        # Collision IDs for non-sprite objects
-        self.groundID = 1
-        self.padID = 2
-        self.reservedIDs = [0, self.groundID, self.padID]
 
         self.voids = []
 
-        self.lander = Lander(self.registerSprite, self.registerVoid,
-            messageRegistrar=self.registerMessage,
-            particleRegistrar=self.registerParticles)
+        self.lander = Lander(self)
+        self.allEntities.add(self.lander)
+
         self.starfield = None
 
         self.particles = []
@@ -853,34 +854,14 @@ class LunarLanderGame:
     def registerParticles(self, particles):
         self.particles.append(particles)
 
-    def registerSprite(self, sprite):
-        ID = self.getNextSpriteID()
-        self.spriteIDMap[ID] = sprite
-        return ID
-
     def registerVoid(self, void):
         self.voids.append(void)
-
-    def deregisterSprite(self, sprite):
-        del self.spriteIDMap[sprite.ID]
-
-    def getNextSpriteID(self):
-        maxID = 255
-        if len(self.spriteIDMap) >= maxID:
-            raise ValueError('Too many sprites')
-        while True:
-            nextID = self.nextID
-            self.nextID += 1
-            if self.nextID == maxID:
-                self.nextID = 1
-            if nextID not in self.spriteIDMap and nextID not in self.reservedIDs:
-                return nextID
 
     def loadStarfield(self):
         self.starfield = pygame.image.load(STARFIELD_FILE)
 
     def generateLanderThumbnail(self):
-        self.landerThumbnailScale = self.lander.radius*2/15
+        self.landerThumbnailScale = 1 #self.lander.radius*2/15
         self.landerThumbnail = pygame.transform.scale_by(self.lander.image, 1/self.landerThumbnailScale)
         self.landerThumbnailRadius = self.lander.radius / self.landerThumbnailScale
 
@@ -903,24 +884,30 @@ class LunarLanderGame:
                 self.causeEvents()
                 self.update()
 
-            visibleRange = self.drawGround()
+            visibleRange = self.updateGroundImage()
+            self.drawGround()
 
             # self.drawVoids()
             #
             self.drawSprites()
-            # self.checkSpriteCollisions()
+            self.checkSpriteCollisions()
             #
             self.drawHUD()
             # self.drawPadDecorations()
             # self.drawParticles()
             self.updateScreenView(visibleRange)
 
+            # Handle key events that should only fire once on keydown
             for event in pygame.event.get():
                 if event.type == pygame.KEYDOWN:
-                    self.handleKeyPress(event)
+                    if event.key not in [pygame.K_RIGHT, pygame.K_LEFT, pygame.K_DOWN, pygame.K_UP]:
+                        self.handleKeyPress(event.key)
 
-            # self.drawMessage()
-
+            # Handle key events that should fire repeatedly as long as key is down
+            keys = pygame.key.get_pressed()
+            for arrow_key in [pygame.K_RIGHT, pygame.K_LEFT, pygame.K_DOWN, pygame.K_UP]:
+                if keys[arrow_key]:
+                    self.handleKeyPress(arrow_key)
 
             pygame.display.flip()
             self.clock.tick(60)
@@ -949,16 +936,19 @@ class LunarLanderGame:
         if powerupType is None:
             powerupType = np.random.choice(list(POWERUP_IMAGES.keys()))
         newPowerUp = PowerUp(
-            self.registerSprite,
+            self,
             powerupType=powerupType,
             image=POWERUP_IMAGES[powerupType].copy(),
             position=position)
-            # **POWERUP_ATTRIBUTES[powerupType])
+        self.powerups.add(newPowerUp)
+        self.allEntities.add(newPowerUp)
 
     def addAsteroids(self, N=15):
         for k in range(N):
             position = self.lander.position + [np.random.uniform(-100, 100), -self.h * self.screenScale + np.random.uniform(-self.h/5, self.h/5)]
-            newAsteroid = Asteroid(self.registerSprite, position=position, angularVelocity=(-1, 1), radius=(3, 40), speed=1.5, color=self.groundColor)
+            newAsteroid = Asteroid(self, position=position, angularVelocity=(-1, 1), radius=(3, 40), speed=1.5, color=self.groundColor)
+            self.asteroids.add(newAsteroid)
+            self.allEntities.add(newAsteroid)
 
     def generateGround(self, nPads=10, nChasms=10, nMountains=3, nCaves=25):
 
@@ -1117,50 +1107,21 @@ class LunarLanderGame:
         return x < -self.offscreenKillDistance or x > self.offscreenKillDistance or y < -self.offscreenKillDistance or y > self.offscreenKillDistance
 
     def drawSprites(self):
-        for ID in self.spriteIDMap:
-            sprite = self.spriteIDMap[ID]
-            sprite.draw(self.screen, scale=self.screenScale, coordinateTransform=self.world2Screen)
+        self.allEntities.draw(self.screen)
 
     def checkSpriteCollisions(self):
-        deadSprites = []
-        for ID in self.spriteIDMap:
-            sprite = self.spriteIDMap[ID]
-            if not sprite.destructing and sprite.life > 0:
-                overlap = sprite.checkOverlap(
-                    self.collisionMap,
-                    scale=self.screenScale,
-                    coordinateTransform=self.world2Screen,
-                    **sprite.overlapInfoRequired)
-            else:
-                overlap = 0
-                overlapIDs = set()
-                normal = None
+        # Check asteroid/powerup collision - powerup dies
+        sprites = self.allEntities.sprites()
+        for k, sprite1 in enumerate(sprites):
+            for sprite2 in sprites[k+1:]:
+                collision_point = pygame.sprite.collide_mask(sprite1, sprite2)
+                sprite1.handleSpriteCollision(sprite2, collision_point=collision_point)
+                sprite2.handleSpriteCollision(sprite1, collision_point=collision_point)
 
-            if overlap > 5:
-                for overlapID in overlapIDs:
-                    if overlapID not in self.reservedIDs:
-                        try:
-                            sprite2 = self.spriteIDMap[overlapID]
-                        except KeyError:
-                            print('Unregistered sprite ID:', overlapID)
-                            breakpoint()
-                        sprite.handleSpriteCollision(sprite2)
-                        sprite2.handleSpriteCollision(sprite)
-                    elif overlapID == self.groundID:
-                        sprite.handleGroundCollision(normal)
-                    elif overlapID == self.padID:
-                        # Check which pad we're on
-                        padIdx = self.getClosestPadIdx(*sprite.position)
-                        sprite.handlePadCollision(padIdx, normal)
-            if self.isSpriteOutOfBounds(sprite):
-                sprite.destroy()
-            if sprite.life <= 0:
-                deadSprites.append(sprite)
-
-        # Remove dead sprites from list
-        if len(deadSprites) > 0:
-            for sprite in deadSprites:
-                self.deregisterSprite(sprite)
+        # Check sprite/ground collision
+        crashed_entities = pygame.sprite.spritecollide(self.ground, self.allEntities, False, collided=pygame.sprite.collide_mask)
+        for sprite in crashed_entities:
+            sprite.handleGroundCollision()
 
     def drawParticles(self):
         deadParticles = []
@@ -1210,15 +1171,19 @@ class LunarLanderGame:
         wHUD = int(0.2 * self.w)
         hHUD = int(0.2 * self.h)
         # HUD outline
-        pygame.draw.rect(self.screen, self.HUDColor, (0, 0, wHUD, hHUD))
+        pygame.draw.rect(self.screen, self.HUDColor, (0, 0, wHUD, hHUD), 1)
+
+        spacing = int(hHUD*0.01)
+        x_left = int(wHUD*0.05)
 
         # Fuel gauge label
         surface = self.HUDFont.render('Fuel', False, self.HUDColor)
-        self.screen.blit(surface, (10, 15))
-        xFuel = int(wHUD*0.05)
-        yFuel = 20
+        x = x_left
+        y = 15
+        self.screen.blit(surface, (x, y))
+        y = y + surface.height + spacing
         wFuel = int(wHUD*0.75)
-        hFuel = 10
+        hFuel = int(hHUD*0.05)
         fFuel = self.lander.fuel / self.lander.maxFuel
         wFuelRemaining = int(wFuel * fFuel)
 
@@ -1233,22 +1198,25 @@ class LunarLanderGame:
         pygame.draw.rect(
             self.screen,
             fuelColor,
-            (xFuel, yFuel, xFuel + wFuelRemaining, yFuel + hFuel)
+            (x, y, wFuelRemaining, hFuel)
             )
         # Fuel outline
         pygame.draw.rect(
             self.screen,
             self.HUDColor,
-            (xFuel, yFuel, xFuel + wFuelRemaining, yFuel + hFuel)
+            (x, y, wFuel, hFuel),
+            1
             )
 
         # Velocity readout
+        y = y + hFuel + spacing
         antialias = False
         surface = self.HUDFont.render(
             'Speed:  {s:.02f} m/s'.format(s=self.lander.speed),
             antialias,
             self.HUDColor)
-        self.screen.blit(surface, dest=(10, 45))
+        self.screen.blit(surface, dest=(x, y))
+        y = y + surface.height + spacing
 
         # Status readout
         if self.lander.isLanded():
@@ -1264,21 +1232,24 @@ class LunarLanderGame:
             antialias,
             self.HUDColor)
         self.screen.blit(surface, dest=(10, 65))
+        y = y + surface.height + spacing
 
         # Draw extra lives
-        x = 10
-        drawImage(self.landerThumbnail, self.screen, position=np.array((x, 80 - int(self.landerThumbnailRadius))), worldUnits=False)
-        x += 5 + int(2*self.landerThumbnailRadius)
+        self.screen.blit(self.landerThumbnail, dest=(x, y))
+        # y += int(2*self.landerThumbnailRadius) + spacing
 
         antialias = False
+        landerRect = self.landerThumbnail.get_rect(topleft=(x, y))
+        self.screen.blit(self.landerThumbnail, dest=landerRect)
         surface = self.HUDFont.render(
             'x{lives}'.format(lives=self.lander.extraLives),
             antialias,
             self.HUDColor)
-        self.screen.blit(surface, dest=(x, 85))
+        textRect = surface.get_rect(midleft=landerRect.midright)
+        self.screen.blit(surface, dest=textRect)
 
         # Draw missiles
-        x += 25
+        x = x + textRect.midright[0] + spacing
         icon = self.getIcon(MISSILE_ICON, self.lander.missileCount > 0)
         y = 79 - int(icon.size[0]/2)
         x0 = x - 5
@@ -1287,46 +1258,46 @@ class LunarLanderGame:
         drawImage(icon, self.screen, position=np.array((x, y)), worldUnits=False)
         x += 10 + icon.size[0] // 2
 
-        antialias = False
-        surface = self.HUDFont.render(
-            'x{missiles}'.format(missiles=self.lander.missileCount),
-            antialias,
-            self.HUDColor)
-        self.screen.blit(surface, dest=(x, 85))
-
-        # Draw airbag
-        x += 10 + MISSILE_ICON.size[0]
-        icon = self.getIcon(AIRBAGS_ICON, self.lander.airbags > 0)
-        x1 = x - 5
-        drawImage(icon, self.screen, position=np.array((x, 79 - int(AIRBAGS_ICON.size[0]/2))), worldUnits=False)
-        # Draw phase out
-        x += 5 + icon.size[0]
-        icon = self.getIcon(PHASEOUT_ICON, self.lander.phaseOuts > 0)
-        x2 = x - 5
-        drawImage(icon, self.screen, position=np.array((x, 79 - int(icon.size[0]/2))), worldUnits=False)
-        x3 = x2 + icon.size[0] + 5
-        # Draw phase out
-        x += 5 + icon.size[0]
-        icon = self.getIcon(LASER_ICON, self.lander.lasers > 0)
-        x3 = x - 5
-        drawImage(icon, self.screen, position=np.array((x, 79 - int(icon.size[0]/2))), worldUnits=False)
-        x4 = x3 + icon.size[0] + 5
-
-        # Draw select box:
-        ybox = [y0, y1]
-        if self.selectedPowerup == 0:
-            p0 = (x0, y0);
-            size = (x1 - x0, y1 - y0);
-        elif self.selectedPowerup == 1:
-            p0 = (x1, y0);
-            size = (x2 - x1, y1 - y0);
-        elif self.selectedPowerup == 2:
-            p0 = (x2, y0);
-            size = (x3 - x2, y1 - y0);
-        elif self.selectedPowerup == 3:  # Laser
-            p0 = (x3, y0);
-            size = (x4 - x3, y1 - y0);
-        pygame.draw.rect(self.screen, self.HUDColor, p0 + size)
+        # antialias = False
+        # surface = self.HUDFont.render(
+        #     'x{missiles}'.format(missiles=self.lander.missileCount),
+        #     antialias,
+        #     self.HUDColor)
+        # self.screen.blit(surface, dest=(x, 85))
+        #
+        # # Draw airbag
+        # x += 10 + MISSILE_ICON.size[0]
+        # icon = self.getIcon(AIRBAGS_ICON, self.lander.airbags > 0)
+        # x1 = x - 5
+        # drawImage(icon, self.screen, position=np.array((x, 79 - int(AIRBAGS_ICON.size[0]/2))), worldUnits=False)
+        # # Draw phase out
+        # x += 5 + icon.size[0]
+        # icon = self.getIcon(PHASEOUT_ICON, self.lander.phaseOuts > 0)
+        # x2 = x - 5
+        # drawImage(icon, self.screen, position=np.array((x, 79 - int(icon.size[0]/2))), worldUnits=False)
+        # x3 = x2 + icon.size[0] + 5
+        # # Draw phase out
+        # x += 5 + icon.size[0]
+        # icon = self.getIcon(LASER_ICON, self.lander.lasers > 0)
+        # x3 = x - 5
+        # drawImage(icon, self.screen, position=np.array((x, 79 - int(icon.size[0]/2))), worldUnits=False)
+        # x4 = x3 + icon.size[0] + 5
+        #
+        # # Draw select box:
+        # ybox = [y0, y1]
+        # if self.selectedPowerup == 0:
+        #     p0 = (x0, y0);
+        #     size = (x1 - x0, y1 - y0);
+        # elif self.selectedPowerup == 1:
+        #     p0 = (x1, y0);
+        #     size = (x2 - x1, y1 - y0);
+        # elif self.selectedPowerup == 2:
+        #     p0 = (x2, y0);
+        #     size = (x3 - x2, y1 - y0);
+        # elif self.selectedPowerup == 3:  # Laser
+        #     p0 = (x3, y0);
+        #     size = (x4 - x3, y1 - y0);
+        # pygame.draw.rect(self.screen, self.HUDColor, p0 + size, 1)
 
     def getIcon(self, icon, dimmed):
         if dimmed:
@@ -1348,38 +1319,36 @@ class LunarLanderGame:
             self.lander.resetState()
             self.moveToPad(self.lander.lastPadIdx)
             self.lander.setLanded(True, padIdx=self.lander.lastPadIdx, showMessage=False)
-            self.lander.spriteRegistrar
             self.showBeginMessage()
 
-    def handleKeyPress(self, event):
-        # print(key)
+    def handleKeyPress(self, key):
         numSelectablePowerups = len(self.selectablePowerups)
 
-        if event.key == pygame.K_RETURN:
+        if key == pygame.K_RETURN:
             if self.lander.life <= 0:
                 # Use extra life and reset
                 if self.lander.extraLives > 0:
                     self.useExtraLife()
                 else:
                     pygame.quit()
-        if event.key == pygame.K_ESCAPE:
+        if key == pygame.K_ESCAPE:
             self.togglePause()
-        if event.key == pygame.K_z:
+        if key == pygame.K_z:
             self.selectedPowerup = (self.selectedPowerup - 1) % numSelectablePowerups
-        if event.key == pygame.K_x:
+        if key == pygame.K_x:
             self.selectedPowerup = (self.selectedPowerup + 1) % numSelectablePowerups
-        if event.key == pygame.K_SPACE:
+        if key == pygame.K_SPACE:
             self.lander.activatePowerup(self.selectablePowerups[self.selectedPowerup])
-        if event.key == pygame.K_q:
+        if key == pygame.K_q:
             pygame.quit()
         if not self.lander.isCrashed() and not self.isPaused():
-            if event.key == pygame.K_UP:
+            if key == pygame.K_UP:
                 self.lander.fireThrusters()
                 if self.lander.isLanded():
                     self.lander.takeoffGrace = 10
                     # Extra kick
                     self.lander.fireThrusters()
-            if event.key == pygame.K_a:
+            if key == pygame.K_a:
                 # self.addAsteroids()
                 # self.createPowerUp(powerupType='Laser')
                 # self.particles.append(Particles(
@@ -1394,22 +1363,21 @@ class LunarLanderGame:
                 # Don't respond to other keys if landed
                 return
 
-            if event.key == pygame.K_LEFT:
-                self.lander.fireRCS(-1)
-            if event.key == pygame.K_DOWN:
-                pass
-            if event.key == pygame.K_RIGHT:
+            if key == pygame.K_LEFT:
                 self.lander.fireRCS(1)
+            if key == pygame.K_DOWN:
+                pass
+            if key == pygame.K_RIGHT:
+                self.lander.fireRCS(-1)
 
     def update(self):
         if self.lander.isLanded():
             # Refuel
             self.lander.fuel = min([self.lander.maxFuel, self.lander.fuel + 0.02])
 
-        for ID in self.spriteIDMap:
-            sprite = self.spriteIDMap[ID]
-            sprite.update(self.gravity)
-            sprite.updateState()
+        self.asteroids.update(self.gravity)
+        self.powerups.update(self.gravity)
+        self.lander.update(self.gravity)
 
     def clearScreen(self):
         self.screen.fill([0, 0, 0])
@@ -1505,7 +1473,11 @@ class LunarLanderGame:
         else:
             return screenX, screenY
 
-    def drawGround(self):
+    def updateGroundImage(self):
+        if self.ground.image is None:
+            self.ground.image = pygame.display.set_mode((self.w, self.h))
+            self.ground.rect = pygame.Rect(0, 0, self.w, self.h)
+
         groundX, groundY = self.world2Screen(self.groundX, self.groundY)
         onScreen = np.logical_and(groundX >= 0, groundX <= self.w)
         onScreenIdx = np.nonzero(onScreen)[0]
@@ -1517,19 +1489,28 @@ class LunarLanderGame:
             groundY = np.append(groundY[firstIdx:lastIdx+1], [self.h*2, self.h*2])
         else:
             visibleRange = [self.h, self.h]
-        rect = pygame.draw.polygon(self.screen, self.groundColor, list(zip(groundX, groundY)))
+        rect = pygame.draw.polygon(self.ground.image, self.groundColor, list(zip(groundX, groundY)))
 
         # Draw pads
-        for pad in self.pads:
-            pad.draw()
-        # padX0s, padY0s = self.world2Screen(self.padX0s, self.padY0s, integer=True)
-        # padX1s, padY1s = self.world2Screen(self.padX1s, self.padY1s, integer=True)
-        # onScreenIdx = np.nonzero(np.logical_and(np.logical_or(padX0s >= 0, padX1s <= self.w), np.logical_or(padY0s >= 0, padY1s <= self.h)))[0].tolist()
-        # for idx in onScreenIdx:
-        #     cv2.rectangle(self.screen, (padX0s[idx], padY0s[idx]), (padX1s[idx], padY1s[idx]), color=self.groundColor, thickness=-1)
-        #     cv2.rectangle(self.collisionMap, (padX0s[idx], padY0s[idx]), (padX1s[idx], padY1s[idx]), color=self.padID, thickness=-1)
-        # return onScreenIdx, visibleRange # Pass out visible pads for convenient drawing of decorations
+        self.pads.draw(self.ground.image)
+
+        self.ground.image.set_colorkey([0, 0, 0])
+        self.ground.mask = pygame.mask.from_surface(self.ground.image)
+        mask = self.ground.mask.to_surface()
+        groundArray = pygame.surfarray.array2d(mask).astype('bool')
+        print(groundArray)
+        print('min  ', groundArray.min())
+        print('mean ', groundArray.mean())
+        print('max  ', groundArray.max())
+        print('N-   ', np.sum(groundArray < 0))
+        print('N0   ', np.sum(groundArray == 0))
+        print('N+   ', np.sum(groundArray > 0))
+        print('shape', groundArray.shape, ' => ', np.prod(groundArray.shape))
+        print('dtype', groundArray.dtype)
         return visibleRange
+
+    def drawGround(self):
+        self.screen.blit(self.ground.image)
 
     def drawVoids(self):
         for void in self.voids:
@@ -1537,34 +1518,23 @@ class LunarLanderGame:
                 void.draw([self.screen, self.collisionMap], self.world2Screen)
 
 def drawImage(image, screen, scale=1, coordinateTransform=None, worldUnits=True,
-        position=np.zeros(2, dtype='float'), reshape=True, orientation=0,
-        calculate_normal=False, calculate_overlap=False, calculate_overlapIDs=False,
-        interpolate=True):
-
-    h, w = image.size
+        position=np.zeros(2, dtype='float'), orientation=0):
 
     if worldUnits and coordinateTransform is not None:
-        x, y = coordinateTransform(*(position - [w/2, h/2]))
+        x, y = coordinateTransform(*position)
     else:
         x, y = position
     image = getRotatedAndScaledImage(image, orientation, scale)
-    # image = getScaledImage(image, scale)
-    # image = getRotatedImage(image, orientation, reshape=reshape)
-    screen.blit(image, (x, y))
-    # overlap, overlapIDs, normal, onScreen = copy_to_destination(
-    #     image,
-    #     screen,
-    #     [int(y), int(x), 0],
-    #     calculate_normal=calculate_normal,
-    #     calculate_overlap=calculate_overlap,
-    #     calculate_overlapIDs=calculate_overlapIDs)
-    # return overlap, overlapIDs, normal, onScreen
+    rect = image.get_rect(center=(x, y))
 
-def getRotatedAndScaledImage(image, angle=0, scale=1):
+    screen.blit(image, rect)
+
+def getRotatedAndScaledImage(image, angle=0, scale=1, centered=False):
         if angle == 0 and scale == 1:
             return image.copy()
         else:
             return pygame.transform.rotozoom(image, angle, scale)
+
 
 def createColorRange(color1, color2, nSteps):
     colors = np.zeros([nSteps, 3], dtype='uint8')
@@ -1730,7 +1700,7 @@ MISSILE_ICON = cropImage(getRotatedAndScaledImage(pygame.image.load(ASSET_DIR / 
 AIRBAGS_ICON = cropImage(getRotatedAndScaledImage(pygame.image.load(ASSET_DIR / 'AirbagsIcon.png'), scale=1.5))
 PHASEOUT_ICON = cropImage(getRotatedAndScaledImage(pygame.image.load(ASSET_DIR / 'PhaseOutIcon.png'), scale=1.5))
 LASER_ICON = cropImage(getRotatedAndScaledImage(pygame.image.load(ASSET_DIR / 'LaserIcon.png'), scale=1.5))
-LANDER_ICON = cropImage(getRotatedAndScaledImage(pygame.image.load(ASSET_DIR / 'Lander.png'), scale=1))
+LANDER_ICON = pygame.image.load(ASSET_DIR / 'Lander.png')
 
 if __name__ == '__main__':
 
