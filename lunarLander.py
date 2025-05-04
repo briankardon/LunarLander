@@ -502,7 +502,7 @@ class Lander(Sprite):
             # Command fire
             self.angularVelocity += amount * power
             # Auto-stabilize
-            self.useFuel(power)
+            self.useFuel(power/3)
 
     def handleSpriteCollision(self, sprite, collisionPoint=None):
         notes = ''
@@ -1462,7 +1462,7 @@ class LunarLanderGame:
     def update(self):
         if self.lander.isLanded():
             # Refuel
-            self.lander.fuel = min([self.lander.maxFuel, self.lander.fuel + 0.06])
+            self.lander.fuel = min([self.lander.maxFuel, self.lander.fuel + 0.2])
 
         self.allEntities.update()
 
@@ -1766,6 +1766,7 @@ POWERUP_FILES = dict((powerup_type, str(ASSET_DIR / 'PowerUp_{name}.png'.format(
 POWERUP_IMAGES = {}
 for powerup_type in POWERUP_TYPES:
     POWERUP_IMAGES[powerup_type] = pygame.image.load(POWERUP_FILES[powerup_type])
+    POWERUP_IMAGES[powerup_type].set_colorkey('black')
 # POWERUP_ATTRIBUTES = dict((powerup_type, {}) for powerup_type in POWERUP_TYPES)
 # POWERUP_ATTRIBUTES['Fuel']['storeable'] = False
 # POWERUP_ATTRIBUTES['Missiles']['storeable'] = False
