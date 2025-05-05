@@ -32,6 +32,14 @@ def cropImage(surface):
     pygame.pixelcopy.array_to_surface(newSurface, image[x0:x1, y0:y1, ...])
     return newSurface
 
+def fitImage(image, s1):
+    s0 = image.get_size()
+    xFactor = s1[0] / s0[0]
+    yFactor = s1[1] / s0[1]
+    factor = min(xFactor, yFactor)
+    scaledImage = pygame.transform.scale_by(image, factor)
+    return scaledImage
+
 def makeRotationMatrix(angle):
     # angle in degrees
     c = np.cos(angle * np.pi / 180)
@@ -102,7 +110,7 @@ class Sprite(pygame.sprite.Sprite):
                     font=None,  # In case the sprite needs to render text
                     angularVelocity=0,
                     noCollideIDs=[],
-                    life=100):
+                    life=40):
         pygame.sprite.Sprite.__init__(self)
         self.game = game
         if type(font) == str:
@@ -183,6 +191,8 @@ class Sprite(pygame.sprite.Sprite):
                 self.image = newImage
             disintegrateImage(self.image, damageCount=int(w*h * self.damageRate))
             self.life -= 1
+        if self.life <= 0:
+            self.kill()
 
     def updateRect(self):
         if self.image is not None:
@@ -309,6 +319,7 @@ class Asteroid(Sprite):
         self.x = None
         self.y = None
         self.color = color
+        self.damageRate = 0.5
 
         radius = self.handleArgumentRange(radius, 10, 3, 15)
 
@@ -323,6 +334,7 @@ class Asteroid(Sprite):
         x = (self.x + radius).astype('int').tolist()
         y = (self.y + radius).astype('int').tolist()
         pygame.draw.polygon(self.image, self.color, list(zip(x, y)), width=0)
+        self.image.set_colorkey('black')
         self.backupImage()
 
     def generateCoordinates(self, radius):
@@ -361,8 +373,12 @@ class PowerUp(Sprite):
         self.updateMask()
 
     def handleSpriteCollision(self, sprite, collisionPoint=None):
-        self.destroy()
-        print('powerup hit sprite of type', type(sprite))
+        if type(sprite) == Lander:
+            # Just disappear
+            self.kill()
+        else:
+            # Do the disintegrating thing
+            self.destroy()
 
     def handleGroundCollision(self, normal=None):
         self.destroy()
@@ -370,7 +386,6 @@ class PowerUp(Sprite):
 
     def destroy(self):
         super().destroy()
-        self.kill()
 
 class Pad(Sprite):
     def __init__(self, game, padNumber, width, height, *args, **kwargs):
@@ -469,7 +484,7 @@ class Pad(Sprite):
 
 class Lander(Sprite):
     def __init__(self, game, *args, **kwargs):
-        super().__init__(game, *args, **kwargs)
+        super().__init__(game, *args, life=100, **kwargs)
         self.voidRegistrar = game.registerVoid
         self.thrusterPower = 0.01
         self.maxFuel = 150 # 15
@@ -502,7 +517,7 @@ class Lander(Sprite):
             # Command fire
             self.angularVelocity += amount * power
             # Auto-stabilize
-            self.useFuel(power/3)
+            self.useFuel(power/20)
 
     def handleSpriteCollision(self, sprite, collisionPoint=None):
         notes = ''
@@ -1259,6 +1274,7 @@ class LunarLanderGame:
     def drawHUD(self):
         wHUD = int(0.2 * self.w)
         hHUD = int(0.2 * self.h)
+
         # HUD outline
         pygame.draw.rect(self.screen, self.HUDColor, (0, 0, wHUD, hHUD), 1)
 
@@ -1316,88 +1332,103 @@ class LunarLanderGame:
             status = 'Flying'
 
         antialias = False
+
         surface = self.HUDFont.render(
             'Status: {status}'.format(status=status),
             antialias,
             self.HUDColor)
-        self.screen.blit(surface, dest=(10, 65))
+        self.screen.blit(surface, dest=(x, y))
         y = y + surface.height + spacing
 
-        # Draw extra lives
-        self.screen.blit(self.landerThumbnail, dest=(x, y))
-        # y += int(2*self.landerThumbnailRadius) + spacing
-
         antialias = False
-        landerRect = self.landerThumbnail.get_rect(topleft=(x, y))
-        self.screen.blit(self.landerThumbnail, dest=landerRect)
-        surface = self.HUDFont.render(
-            'x{lives}'.format(lives=self.lander.extraLives),
-            antialias,
-            self.HUDColor)
-        textRect = surface.get_rect(midleft=landerRect.midright)
-        self.screen.blit(surface, dest=textRect)
+
+        ## Draw icons
+        margin = 10
+        # Draw extra lives
+        x = x_left
+        icon = self.landerThumbnail
+        livesRect = self.drawPowerupStatus(
+            screen=self.screen,
+            icon=self.landerThumbnail,
+            count=self.lander.extraLives,
+            topleft=(x, y),
+            font=self.HUDFont,
+            color=self.HUDColor,
+            antialias=antialias
+        )
+        x = livesRect.right + margin
 
         # Draw missiles
-        x = x + textRect.midright[0] + spacing
-        icon = self.getIcon(MISSILE_ICON, self.lander.missileCount > 0)
-        y = 79 - int(icon.size[0]/2)
-        x0 = x - 5
-        y0 = y
-        y1 = y + icon.size[1]
-        drawImage(icon, self.screen, position=np.array((x, y)), worldUnits=False)
-        x += 10 + icon.size[0] // 2
+        icon = self.getIcon(MISSILE_ICON, self.lander.missileCount == 0)
+        missileRect = self.drawPowerupStatus(
+            screen=self.screen,
+            icon=icon,
+            count=self.lander.missileCount,
+            topleft=(x, y),
+            font=self.HUDFont,
+            color=self.HUDColor,
+            antialias=antialias
+        )
+        x = missileRect.right + margin
 
-        # antialias = False
-        # surface = self.HUDFont.render(
-        #     'x{missiles}'.format(missiles=self.lander.missileCount),
-        #     antialias,
-        #     self.HUDColor)
-        # self.screen.blit(surface, dest=(x, 85))
-        #
-        # # Draw airbag
-        # x += 10 + MISSILE_ICON.size[0]
-        # icon = self.getIcon(AIRBAGS_ICON, self.lander.airbags > 0)
-        # x1 = x - 5
-        # drawImage(icon, self.screen, position=np.array((x, 79 - int(AIRBAGS_ICON.size[0]/2))), worldUnits=False)
-        # # Draw phase out
-        # x += 5 + icon.size[0]
-        # icon = self.getIcon(PHASEOUT_ICON, self.lander.phaseOuts > 0)
-        # x2 = x - 5
-        # drawImage(icon, self.screen, position=np.array((x, 79 - int(icon.size[0]/2))), worldUnits=False)
-        # x3 = x2 + icon.size[0] + 5
-        # # Draw phase out
-        # x += 5 + icon.size[0]
-        # icon = self.getIcon(LASER_ICON, self.lander.lasers > 0)
-        # x3 = x - 5
-        # drawImage(icon, self.screen, position=np.array((x, 79 - int(icon.size[0]/2))), worldUnits=False)
-        # x4 = x3 + icon.size[0] + 5
-        #
+        # Draw airbag
+        icon = self.getIcon(AIRBAGS_ICON, self.lander.airbags == 0)
+        airbagsRect = self.drawPowerupStatus(
+            screen=self.screen,
+            icon=icon,
+            count=self.lander.airbags,
+            topleft=(x, y),
+            font=self.HUDFont,
+            color=self.HUDColor,
+            antialias=antialias
+        )
+        x = airbagsRect.right + margin
+
+        # Draw phaseout
+        icon = self.getIcon(PHASEOUT_ICON, self.lander.phaseOuts == 0)
+        phaseoutRect = self.drawPowerupStatus(
+            screen=self.screen,
+            icon=icon,
+            count=self.lander.phaseOuts,
+            topleft=(x, y),
+            font=self.HUDFont,
+            color=self.HUDColor,
+            antialias=antialias
+        )
+        x = phaseoutRect.right + margin
+
         # # Draw select box:
-        # ybox = [y0, y1]
-        # if self.selectedPowerup == 0:
-        #     p0 = (x0, y0);
-        #     size = (x1 - x0, y1 - y0);
-        # elif self.selectedPowerup == 1:
-        #     p0 = (x1, y0);
-        #     size = (x2 - x1, y1 - y0);
-        # elif self.selectedPowerup == 2:
-        #     p0 = (x2, y0);
-        #     size = (x3 - x2, y1 - y0);
-        # elif self.selectedPowerup == 3:  # Laser
-        #     p0 = (x3, y0);
-        #     size = (x4 - x3, y1 - y0);
-        # pygame.draw.rect(self.screen, self.HUDColor, p0 + size, 1)
+        if self.selectedPowerup == 0:
+            rect = missileRect
+        elif self.selectedPowerup == 1:
+            rect = airbagsRect
+        elif self.selectedPowerup == 2:
+            rect = phaseoutRect
+        elif self.selectedPowerup == 3:  # Laser
+            rect = pygame.Rect(0, 0, 0, 0)
+            pass
+        pygame.draw.rect(self.screen, self.HUDColor, rect, width=1)
+
+    def drawPowerupStatus(self, screen, icon, count, topleft, font, color, antialias=False):
+        # Draw extra lives
+        iconRect = icon.get_rect(topleft=topleft)
+        screen.blit(icon, dest=iconRect)
+        surface = font.render(
+            'x{lives}'.format(lives=count),
+            antialias,
+            color)
+        textRect = surface.get_rect(midleft=iconRect.midright)
+        screen.blit(surface, dest=textRect)
+        rect = pygame.Rect(iconRect.left, iconRect.top, iconRect.width + textRect.width, iconRect.height)
+        return rect
 
     def getIcon(self, icon, dimmed):
-        if dimmed:
+        if not dimmed:
             return icon
         else:
             # Dim out icon
-            originalSize = icon.size
-            icon_array = np.zeros(originalSize + (3,), dtype='uint8')
-            pygame.pixelcopy.surface_to_array(icon_array, icon)
+            icon_array = pygame.surfarray.array3d(icon)
             icon_array = icon_array // 2
-            pygame.pixelcopy.array_to_surface(icon, icon_array)
             return icon
 
     def useExtraLife(self):
@@ -1438,7 +1469,7 @@ class LunarLanderGame:
                     # Extra kick
                     self.lander.fireThrusters()
             if key == pygame.K_a:
-                # self.addAsteroids()
+                self.addAsteroids()
                 # self.createPowerUp(powerupType='Laser')
                 # self.particles.append(Particles(
                 #     position=self.lander.position.copy(),
@@ -1446,7 +1477,7 @@ class LunarLanderGame:
                 # ))
                 # self.fireMissile()
                 # self.lander.activatePowerup('PhaseOut')
-                self.lander.fireLaser()
+                # self.lander.fireLaser()
 
             if self.lander.isLanded():
                 # Don't respond to other keys if landed
@@ -1773,11 +1804,12 @@ for powerup_type in POWERUP_TYPES:
 STARFIELD_FILE = ASSET_DIR / 'Starfield.png'
 
 MISSILE_IMAGE = pygame.image.load(ASSET_DIR / 'MissileSprite.png')
-MISSILE_ICON = cropImage(getRotatedAndScaledImage(pygame.image.load(ASSET_DIR / 'MissileIcon.png'), scale=1.25))
-AIRBAGS_ICON = cropImage(getRotatedAndScaledImage(pygame.image.load(ASSET_DIR / 'AirbagsIcon.png'), scale=1.5))
-PHASEOUT_ICON = cropImage(getRotatedAndScaledImage(pygame.image.load(ASSET_DIR / 'PhaseOutIcon.png'), scale=1.5))
-LASER_ICON = cropImage(getRotatedAndScaledImage(pygame.image.load(ASSET_DIR / 'LaserIcon.png'), scale=1.5))
+
 LANDER_ICON = pygame.image.load(ASSET_DIR / 'Lander.png')
+MISSILE_ICON = fitImage(cropImage(pygame.image.load(ASSET_DIR / 'MissileIcon.png')), LANDER_ICON.get_size())
+AIRBAGS_ICON = fitImage(cropImage(pygame.image.load(ASSET_DIR / 'AirbagsIcon.png')), LANDER_ICON.get_size())
+PHASEOUT_ICON = fitImage(cropImage(pygame.image.load(ASSET_DIR / 'PhaseOutIcon.png')), LANDER_ICON.get_size())
+LASER_ICON = fitImage(cropImage(pygame.image.load(ASSET_DIR / 'LaserIcon.png')), LANDER_ICON.get_size())
 
 if __name__ == '__main__':
 
