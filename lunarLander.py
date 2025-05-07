@@ -27,8 +27,6 @@ def cropImage(surface):
     newW = x1 - x0
     newH = y1 - y0
     newSurface = pygame.Surface((newW, newH))
-    print(image[x0:x1, y0:y1, ...].shape)
-    print(newSurface.size)
     pygame.pixelcopy.array_to_surface(newSurface, image[x0:x1, y0:y1, ...])
     return newSurface
 
@@ -46,8 +44,10 @@ def makeRotationMatrix(angle):
     s = np.sin(angle * np.pi / 180)
     return np.array([[c, -s], [s, c]])
 
-class Particles:
-    def __init__(self, position=np.array([0, 0]), life=100, radius=10, rate=10, colors=np.ones([1, 3])*255, persistence=10):
+class Particles(pygame.sprite.Sprite):
+    def __init__(self, game, *args, position=np.array([0, 0]), life=100, radius=10, rate=10, colors=np.ones([1, 3])*255, persistence=10, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.game = game
         self.position = position
         self.life = life
         self.persistence = persistence
@@ -55,45 +55,70 @@ class Particles:
         self.rate = rate
         self.colors = colors # Nx3 array of uint8 color values to randomly choose from
         self.maxParticles = int(self.persistence * self.rate)
-        self.x = deque(maxlen=self.maxParticles)
-        self.y = deque(maxlen=self.maxParticles)
-        self.vx = deque(maxlen=self.maxParticles)
-        self.vy = deque(maxlen=self.maxParticles)
+        self.x = np.array([])
+        self.y = np.array([])
+        self.vx = np.array([])
+        self.vy = np.array([])
+        self.image = None
+        self.rect = None
+        self.updateImage()
+        self.updateRect()
 
-    def draw(self, screen, coordinateTransform=None):
+    def updateRect(self):
+        self.rect = self.image.get_rect(center=self.game.world2Screen(*self.position))
+
+    def updateImage(self):
+        if self.image is None:
+            self.image = pygame.Surface((self.radius*2, self.radius*2))
+            self.image.set_colorkey('black')
+
+        # Clear image
+        self.image.fill('black')
+        # Get array reference to image
+        imarray = pygame.surfarray.pixels3d(self.image)
+        # Choose particle colors
+        colorChoices = np.random.randint(0, self.colors.shape[0], size=len(self.x))
+        # Draw particles
+        imarray[self.x.astype('int'), self.y.astype('int'), :] = self.colors[list(colorChoices), :]
+
+    def update(self):
         if self.isAlive():
             self.life -= 1
             if self.life > 0:
                 # Only create new particles if life > 0
                 r = np.random.normal(loc=0, scale=self.radius / 2, size=self.rate)
                 a = np.random.uniform(0, 2*np.pi, size=self.rate)
-                newX = r * np.cos(a) + self.position[0]
-                newY = r * np.sin(a) + self.position[1]
+                newX = r * np.cos(a) + self.radius
+                newY = r * np.sin(a) + self.radius
                 newVx = np.random.uniform(-0.1, 0.1, size=self.rate)
                 newVy = np.random.uniform(-0.1, 0.1, size=self.rate)
-                outOfRange = [k for k in range(len(r)) if r[k] >= self.radius]
-                newX = np.delete(newX, outOfRange)
-                newY = np.delete(newY, outOfRange)
-                newVx = np.delete(newVx, outOfRange)
-                newVy = np.delete(newVy, outOfRange)
-                self.x.extend(newX)
-                self.y.extend(newY)
-                self.vx.extend(newVx)
-                self.vy.extend(newVy)
+                self.x = np.concatenate((newX, self.x))
+                self.y = np.concatenate((newY, self.y))
+                self.vx = np.concatenate((newVx, self.vx))
+                self.vy = np.concatenate((newVy, self.vy))
+                self.x = self.x[:self.maxParticles]
+                self.y = self.y[:self.maxParticles]
+                self.vx = self.vx[:self.maxParticles]
+                self.vy = self.vy[:self.maxParticles]
             else:
                 # Dying, just get rid of old particles
-                self.x = list(self.x)[:-self.rate]
-                self.y = list(self.y)[:-self.rate]
-                self.vx = list(self.vx)[:-self.rate]
-                self.vy = list(self.vy)[:-self.rate]
-            if coordinateTransform is not None:
-                x, y, valid = coordinateTransform(self.x, self.y, integer=True, asList=False, checkValid=True)
-            colorChoices = np.random.randint(0, self.colors.shape[0], size=len(x))
-            screen[y[valid], x[valid], :] = self.colors[colorChoices[valid], :]
+                self.x = self.x[:-self.rate]
+                self.y = self.y[:-self.rate]
+                self.vx = self.vx[:-self.rate]
+                self.vy = self.vy[:-self.rate]
 
-            for k in range(len(self.x)):
-                self.x[k] += self.vx[k]
-                self.y[k] += self.vy[k]
+            self.x += self.vx
+            self.y += self.vy
+
+            inRange = (0 <= self.x) & (self.x < self.image.width) & (0 <= self.y) & (self.y < self.image.height)
+            self.x = self.x[inRange]
+            self.y = self.y[inRange]
+            self.vx = self.vx[inRange]
+            self.vy = self.vy[inRange]
+            self.updateImage()
+            self.updateRect()
+        else:
+            self.kill()
 
     def isAlive(self):
         return not (self.life <= 0 and len(self.x) == 0)
@@ -120,12 +145,10 @@ class Sprite(pygame.sprite.Sprite):
         else:
             # Font is a font object, just use it
             self.font = font
-        self.particleRegistrar = game.registerParticles
-        self.messageRegistrar = game.registerMessage
         self.position = np.array(position)
 
         self._orientation = self.handleArgumentRange(orientation, 0, 0, 2*np.pi)
-        self._lastOrientation = self._orientation
+        self._lastOrientation = None
         self._scale = 1
         self._lastScale = self._scale
 
@@ -146,7 +169,6 @@ class Sprite(pygame.sprite.Sprite):
         self.image = image
         self.mask = None
         self.rect = None
-        self.collisionMask = None
         self.imageBackup = None
         self.destructing = False
         self.bouncy = False
@@ -203,6 +225,7 @@ class Sprite(pygame.sprite.Sprite):
             self.mask = pygame.mask.from_surface(self.image)
 
     def setOrientation(self, orientation):
+        orientation = np.mod(orientation, 360)
         self._orientation = orientation
         orientationChanged = (self._lastOrientation != orientation)
         if orientationChanged:
@@ -212,7 +235,7 @@ class Sprite(pygame.sprite.Sprite):
                             self.getOrientation(),
                             self.getScale())
             self.updateRect()
-        self._lastOrientation = np.mod(orientation, 360)
+        self._lastOrientation = self.getOrientation()
         return orientationChanged
     def incrementOrientation(self, deltaOrientation):
         self.setOrientation(self._orientation + deltaOrientation)
@@ -272,15 +295,6 @@ class Sprite(pygame.sprite.Sprite):
 
         screen.blit(self.image, self.rect)
 
-    def checkOverlap(self, collisionMap, noCollideIDs=[], scale=1,
-            coordinateTransform=None, position=None, orientation=None,
-            worldUnits=True, collisionMask=None,
-            calculate_normal=True, calculate_overlap=True,
-            calculate_overlapIDs=True):
-
-            # NEEDS WORK
-            return False
-
     def destroy(self):
         self.destructing = True
 
@@ -288,30 +302,40 @@ class Missile(Sprite):
     def __init__(self, *args, thrust=0.1, **kwargs):
         super().__init__(*args, **kwargs)
         self.angularVelocity = 0
-        fireAngle = (self.getOrientation()-90) * np.pi / 180
-        self.thrust = thrust * np.array([np.cos(fireAngle), np.sin(fireAngle)])
+        fireAngle = self.getOrientation() * np.pi / 180
+        self.thrust = thrust * np.array([-np.sin(fireAngle), -np.cos(fireAngle)])
 
-        color1 = [0, 0, 200]
-        color2 = [150, 150, 255]
+        color1 = [200, 0, 0]
+        color2 = [255, 150, 150]
         self.explodeColors = createColorRange(color1, color2, 15)
 
         self.updateMask()
         self.backupImage()
 
     def destroy(self):
-        self.particleRegistrar(Particles(
-            position=self.position.copy(),
-            life=40, radius=15, rate=30, persistence=5, colors=self.explodeColors
-        ))
-        self.destructing = True
+        self.game.addParticles(
+            Particles(
+                self.game,
+                position=self.position + (self.image.width/3) * self.velocity / np.linalg.norm(self.velocity),
+                life=40,
+                radius=25,
+                rate=40,
+                persistence=5,
+                colors=self.explodeColors
+            )
+        )
+        self.kill()
 
     def handleSpriteCollision(self, sprite, collisionPoint=None):
-        if isinstance(sprite, Asteroid):
-            self.destroy()
-            print('Missile hit asteroid')
+        if not self.destructing:
+            if isinstance(sprite, (Asteroid, Pad)):
+                self.destroy()
+                print('Missile hit asteroid')
+
     def handleGroundCollision(self, normal=None):
-        self.destroy()
-        print('Missile hit ground')
+        if not self.destructing:
+            self.destroy()
+            print('Missile hit ground')
 
 class Asteroid(Sprite):
     def __init__(self, *args, radius=(3, 15), color=[255, 255, 255], **kwargs):
@@ -485,7 +509,6 @@ class Pad(Sprite):
 class Lander(Sprite):
     def __init__(self, game, *args, **kwargs):
         super().__init__(game, *args, life=100, **kwargs)
-        self.voidRegistrar = game.registerVoid
         self.thrusterPower = 0.01
         self.maxFuel = 150 # 15
         self.fuel = self.maxFuel
@@ -498,7 +521,7 @@ class Lander(Sprite):
         self.airbags = 1
         self.phaseOuts = 1
         self.lasers = 0
-        self.missileCount = 0
+        self.missileCount = 4
         self.createRotationMatrix()
         self.generateImage()
         self.backupImage()
@@ -578,8 +601,10 @@ class Lander(Sprite):
         self.freeze()
         self.destroy()
         if showMessage:
-            self.messageRegistrar(
+            self.game.addMessage(
                 Message(
+                    self.game,
+                    position=(self.game.w/2, self.game.h/2),
                     text="Crashed!",
                     duration=50,
                     color=[150, 150, 255],
@@ -588,8 +613,10 @@ class Lander(Sprite):
                     size=1)
                 )
             if self.extraLives > 0:
-                self.messageRegistrar(
+                self.game.addMessage(
                     Message(
+                        self.game,
+                        position=(self.game.w/2, self.game.h/2),
                         text="Press enter to try again!",
                         duration=150,
                         color=[150, 150, 255],
@@ -598,8 +625,10 @@ class Lander(Sprite):
                         size=1)
                     )
             else:
-                self.messageRegistrar(
+                self.game.addMessage(
                     Message(
+                        self.game,
+                        position=(self.game.w/2, self.game.h/2),
                         text="Game over!",
                         duration=150,
                         color=[150, 150, 255],
@@ -611,11 +640,14 @@ class Lander(Sprite):
         if not self.isLanded() and newLandedState:
             # Lander has just landed
             self.isOnPad = True
+            pad.hasLander = True
             self.freeze()
             self.lastPad = pad
             if showMessage:
-                self.messageRegistrar(
+                self.game.addMessage(
                     Message(
+                        self.game,
+                        position=(self.game.w/2, self.game.h/2),
                         text="Landed!",
                         duration=100,
                         color=[150, 255, 150],
@@ -626,6 +658,7 @@ class Lander(Sprite):
             # Lander has just taken off
             self.takeoffGrace = 10
             self.isOnPad = False
+            self.lastPad.hasLander = False
 
     def isLanded(self):
         return self.isOnPad
@@ -635,17 +668,16 @@ class Lander(Sprite):
         return self.destructing
 
     def fireMissile(self):
-        velocity = self.velocity.copy()
-
         newMissile = Missile(
-            game,
+            self.game,
             thrust=0.1,
             image=MISSILE_IMAGE.copy(),
             orientation=self.getOrientation(),
             position=self.position.copy(),
-            velocity=velocity,
-            noCollideIDs=[self.ID],
+            velocity=self.velocity.copy(),
             life=10)
+
+        self.game.addMissile(newMissile)
 
     def fireLaser(self):
         origin = self.position.copy()
@@ -653,25 +685,28 @@ class Lander(Sprite):
         width = 40
         length = 600
         void = LaserTunnel(origin, orientation+-90, width, length)
-        self.voidRegistrar(void)
+        self.game.addVoid(void)
 
     def activatePowerup(self, powerupName):
         # ["Missiles", "Airbags", "PhaseOut"]
         if powerupName == "Missiles":
             if self.missileCount > 0:
-                self.fireMissile()
                 self.missileCount -= 1
+                self.fireMissile()
         elif powerupName == "Airbags":
             print("activating airbags!")
         elif powerupName == "PhaseOut":
-            maxPhaseOut = 1000
-            self.phaseOutTime += maxPhaseOut
-            self.particleRegistrar(
-                Particles(
-                    position=self.position,  # Not a copy, so it follows the sprite
-                    life=maxPhaseOut-5, radius=self.radius, rate=30, persistence=5, colors=self.phaseOutColors
+            if self.phaseOuts > 0:
+                maxPhaseOut = 1000
+                self.phaseOutTime += maxPhaseOut
+                self.phaseOuts -= 1
+                self.game.addParticles(
+                    Particles(
+                        self.game,
+                        position=self.position,  # Not a copy, so it follows the sprite
+                        life=maxPhaseOut-5, radius=self.radius, rate=30, persistence=5, colors=self.phaseOutColors
+                    )
                 )
-            )
         elif powerupName == "Laser":
             if self.lasers > 0:
                 self.fireLaser()
@@ -689,9 +724,9 @@ class Lander(Sprite):
         elif powerup.type == 'ExtraLife':
             self.extraLives += 1
         elif powerup.type == 'Airbags':
-            self.airbags = 1
+            self.airbags += 1
         elif powerup.type == 'PhaseOut':
-            self.phaseOuts = 1
+            self.phaseOuts += 1
         elif powerup.type == 'Laser':
             self.lasers += 1
         else:
@@ -757,7 +792,7 @@ class Lander(Sprite):
             x, y = self.game.world2Screen(x, y, integer=True, asList=False)
             pt0, pt1, pt2 = list(zip(x, y))
 
-            pygame.draw.lines(screen, [100, 100, 255], False, [pt0, pt1, pt2], 1)
+            pygame.draw.polygon(screen, [255, 100, 100], [pt0, pt1, pt2], width=0)
 
     def fireThrusters(self):
         if self.fuel > 0 and not self.destructing:
@@ -770,8 +805,10 @@ class Lander(Sprite):
     def useFuel(self, amount):
         self.fuel = max([0, self.fuel - amount])
         if self.fuel == 0:
-            self.messageRegistrar(
+            self.game.addMessage(
                 Message(
+                    self.game,
+                    position=(self.game.w/2, self.game.h/2),
                     text="Out of fuel!",
                     duration=250,
                     color=[50, 200, 200],
@@ -788,8 +825,10 @@ class Lander(Sprite):
         self.drawExhaustPlume(screen)
         return super().draw(screen)
 
-class Message:
+class Message(pygame.sprite.Sprite):
     def __init__(self,
+                game,
+                *args,
                 text='',
                 duration=100,
                 color=[255, 255, 255],
@@ -797,7 +836,13 @@ class Message:
                 size=0.5,
                 flashFrequency=None,
                 font=pygame.font.Font(),
-                thickness=1):
+                position=None,
+                thickness=1,
+                **kwargs
+            ):
+        super().__init__(*args, **kwargs)
+        self.game = game
+        self.position = position
         self.text = text
         self.duration = duration
         self.color = color
@@ -810,28 +855,34 @@ class Message:
         self.textSize = self.font.size(self.text)
         self.makeColorPairs()
 
+    def update(self):
+        self.updateImage()
+        self.updateRect()
+        self.duration -= 1
+        if self.duration <= 0:
+            self.kill()
+
+    def updateRect(self):
+        self.rect = self.image.get_rect(center=self.position)
+
+    def updateImage(self):
+        if self.duration > 0:
+            if self.flashFrequency is None:
+                color = self.color
+            else:
+                f = (np.sin(self.game.time * self.flashFrequency) + 1) / 2
+                if self.colorPairs is None:
+                    self.makeColorPairs()
+                color = [int(c1 * f + c2 * (1-f)) for c1, c2 in self.colorPairs]
+            antialias = False
+            self.image = self.font.render(self.text, antialias, color)
+            self.image.set_colorkey('black')
+
     def makeColorPairs(self):
         if self.color2 is not None:
             self.colorPairs = list(zip(self.color, self.color2))
         else:
             self.colorPairs = None
-
-    def draw(self, screen, time=0):
-        if self.duration > 0:
-            w, h = screen.size
-            x = int((w - self.textSize[0])/2)
-            y = int((h - self.textSize[1])/2)
-            if self.flashFrequency is None:
-                color = self.color
-            else:
-                f = (np.sin(time * self.flashFrequency) + 1) / 2
-                if self.colorPairs is None:
-                    self.makeColorPairs()
-                color = [int(c1 * f + c2 * (1-f)) for c1, c2 in self.colorPairs]
-            antialias = False
-            surface = self.font.render(self.text, antialias, color)
-            screen.blit(surface, dest=(x, y))
-            self.duration -= 1
 
 class Void:
     def __init__(self, x, y):
@@ -901,8 +952,11 @@ class LunarLanderGame:
         self.pads = pygame.sprite.Group()
         self.asteroids = pygame.sprite.Group()
         self.powerups = pygame.sprite.Group()
-        self.pads = pygame.sprite.Group()
+        self.missiles = pygame.sprite.Group()
         self.allEntities = pygame.sprite.Group()
+
+        self.particles = pygame.sprite.Group()
+        self.messages = pygame.sprite.Group()
 
         self.gravity = np.array([0, 0.002], dtype='float')
         self.landerThumbnail = None
@@ -914,7 +968,6 @@ class LunarLanderGame:
         self.padColor = [150, 150, 100]
         self.groundColor = [155, 155, 155]
         self.time = 0
-        self.messages = []
         self.offscreenKillDistance = max([self.h, self.w])*2
 
         self.selectablePowerups = ["Missiles", "Airbags", "PhaseOut", "Laser"]
@@ -929,8 +982,6 @@ class LunarLanderGame:
 
         self.starfield = None
 
-        self.particles = []
-
         self.paused = False
 
         self.loadStarfield()
@@ -943,11 +994,32 @@ class LunarLanderGame:
         self.lander.setLandedState(True, pad=startingPad, showMessage=False)
         self.showBeginMessage()
 
+    def addPad(self, sprite):
+        self.pads.add(sprite)
+        self.allEntities.add(sprite)
+    def addAsteroid(self, sprite):
+        self.asteroids.add(sprite)
+        self.allEntities.add(sprite)
+    def addPowerup(self, sprite):
+        self.powerups.add(sprite)
+        self.allEntities.add(sprite)
+    def addMissile(self, sprite):
+        self.missiles.add(sprite)
+        self.allEntities.add(sprite)
+    def addParticles(self, sprite):
+        self.particles.add(sprite)
+    def addMessage(self, sprite):
+        self.messages.add(sprite)
+    def addVoid(self, sprite):
+        raise NotImplementedError
+
     def pause(self):
         self.paused = True
         # Add paused message
-        self.registerMessage(
+        self.addMessage(
             Message(
+                self,
+                position=(self.w/2, self.h/2),
                 text="Paused",
                 duration=np.inf,
                 color=[255, 150, 150],
@@ -970,16 +1042,6 @@ class LunarLanderGame:
     def isPaused(self):
         return self.paused
 
-    def registerMessage(self, message):
-        assert isinstance(message, Message)
-        self.messages.append(message)
-
-    def registerParticles(self, particles):
-        self.particles.append(particles)
-
-    def registerVoid(self, void):
-        self.voids.append(void)
-
     def loadStarfield(self):
         self.starfield = pygame.image.load(STARFIELD_FILE)
 
@@ -989,8 +1051,10 @@ class LunarLanderGame:
         self.landerThumbnailRadius = self.lander.radius / self.landerThumbnailScale
 
     def showBeginMessage(self):
-        self.registerMessage(
+        self.addMessage(
             Message(
+                self,
+                position=(self.w/2, self.h/2),
                 text="Begin!",
                 duration=100,
                 color=[255, 150, 150],
@@ -1039,8 +1103,10 @@ class LunarLanderGame:
     def causeEvents(self):
         c = np.random.uniform()
         if c < 0.0002:
-            self.registerMessage(
+            self.addMessage(
                 Message(
+                    self,
+                    position=(self.w/2, self.h/2),
                     text="Asteroid alert!",
                     duration=50,
                     color=[150, 150, 255],
@@ -1062,15 +1128,13 @@ class LunarLanderGame:
             powerupType=powerupType,
             image=POWERUP_IMAGES[powerupType].copy(),
             position=position)
-        self.powerups.add(newPowerUp)
-        self.allEntities.add(newPowerUp)
+        self.addPowerup(newPowerUp)
 
     def addAsteroids(self, N=15):
         for k in range(N):
             position = self.lander.position + [np.random.uniform(-100, 100), -self.h * self.screenScale + np.random.uniform(-self.h/5, self.h/5)]
             newAsteroid = Asteroid(self, position=position, angularVelocity=(-1, 1), radius=(3, 40), speed=1.5, color=self.groundColor)
-            self.asteroids.add(newAsteroid)
-            self.allEntities.add(newAsteroid)
+            self.addAsteroid(newAsteroid)
 
     def generateGround(self, nPads=10, nChasms=10, nMountains=3, nCaves=25):
 
@@ -1182,8 +1246,7 @@ class LunarLanderGame:
                 font='arial',
                 position=position
             )
-            self.pads.add(newPad)
-            self.allEntities.add(newPad)
+            self.addPad(newPad)
 
     def addCaveElement(self, idx0, idx1, algorithm, *args, nTrys=5, **kwargs):
         positionLeft  = np.array([self.groundX[idx0], self.groundY[idx0]])
@@ -1222,6 +1285,7 @@ class LunarLanderGame:
         self.lander.angularVelocity = 0
         self.screenCenter[0] = padCenterX
         self.lander.updateRect()
+        pad.hasLander = True
 
     def getClosestPad(self, x, y):
         # Get index of the closest pad to the coordinates
@@ -1239,6 +1303,8 @@ class LunarLanderGame:
     def drawSprites(self):
         self.lander.drawExhaustPlume(self.screen)
         self.allEntities.draw(self.screen)
+        self.particles.draw(self.screen)
+        self.messages.draw(self.screen)
 
     def checkSpriteCollisions(self):
         # Check asteroid/powerup collision - powerup dies
@@ -1469,13 +1535,13 @@ class LunarLanderGame:
                     # Extra kick
                     self.lander.fireThrusters()
             if key == pygame.K_a:
-                self.addAsteroids()
-                # self.createPowerUp(powerupType='Laser')
+                # self.addAsteroids()
+                self.createPowerUp(powerupType='Airbags')
                 # self.particles.append(Particles(
                 #     position=self.lander.position.copy(),
                 #     life=100, radius=50, rate=5, persistence=20, colors=np.ones([1, 3])*255
                 # ))
-                # self.fireMissile()
+                # self.lander.fireMissile()
                 # self.lander.activatePowerup('PhaseOut')
                 # self.lander.fireLaser()
 
@@ -1496,6 +1562,8 @@ class LunarLanderGame:
             self.lander.fuel = min([self.lander.maxFuel, self.lander.fuel + 0.2])
 
         self.allEntities.update()
+        self.particles.update()
+        self.messages.update()
 
     def clearScreen(self):
         self.screen.fill([0, 0, 0])
@@ -1667,7 +1735,7 @@ def generateRandomVelocity(speedRange, angleRange=None):
     velocity = speed * np.array([np.cos(angle), np.sin(angle)], dtype='float')
     return velocity
 
-def disintegrateImage(image, damageCount=50):
+def disintegrateImage(image, damageCount=50, chunkSize=1):
     rng = np.random.default_rng()
     radius_x = int(image.width/2)
     radius_y = int(image.height/2)
@@ -1683,7 +1751,14 @@ def disintegrateImage(image, damageCount=50):
     x_end = (x_end + radius_x).astype('int')
     y_end = (y_end + radius_y).astype('int')
 
-    out_of_range = np.logical_or.reduce([x_end < 0, x_end >= image.width, y_end < 0, y_end >= image.height])
+    out_of_range = np.logical_or.reduce(
+        [
+            x_end < chunkSize - 1,
+            x_end >= image.width - chunkSize + 1,
+            y_end < chunkSize,
+            y_end >= image.height - chunkSize + 1
+        ]
+    )
 
     imarray = pygame.surfarray.pixels3d(image)
     vals = imarray[x_start, y_start, :]
