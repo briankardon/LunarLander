@@ -604,14 +604,16 @@ class Lander(Sprite):
             self.game.addMessage(
                 Message(
                     self.game,
-                    position=(self.game.w/2, self.game.h/2),
+                    position=(0, 0),
                     text="Crashed!",
                     duration=50,
                     color=[150, 150, 255],
                     color2=[50, 50, 150],
                     flashFrequency=0.1,
-                    size=1)
-                )
+                    size=1
+                ),
+                handlePosition=True
+            )
             if self.extraLives > 0:
                 self.game.addMessage(
                     Message(
@@ -622,8 +624,10 @@ class Lander(Sprite):
                         color=[150, 150, 255],
                         color2=[50, 50, 150],
                         flashFrequency=0.1,
-                        size=1)
-                    )
+                        size=1
+                    ),
+                    handlePosition=True
+                )
             else:
                 self.game.addMessage(
                     Message(
@@ -634,8 +638,10 @@ class Lander(Sprite):
                         color=[150, 150, 255],
                         color2=[50, 50, 150],
                         flashFrequency=0.1,
-                        size=1)
-                    )
+                        size=1
+                    ),
+                    handlePosition=True
+                )
     def setLandedState(self, newLandedState, pad=None, showMessage=True):
         if not self.isLanded() and newLandedState:
             # Lander has just landed
@@ -653,7 +659,10 @@ class Lander(Sprite):
                         color=[150, 255, 150],
                         color2=[50, 150, 50],
                         flashFrequency=0.1,
-                        size=1))
+                        size=1
+                    ),
+                    handlePosition=True
+                )
         elif self.isLanded() and not newLandedState:
             # Lander has just taken off
             self.takeoffGrace = 10
@@ -814,7 +823,9 @@ class Lander(Sprite):
                     color=[50, 200, 200],
                     color2=[100, 100, 100],
                     flashFrequency=0.1,
-                    size=1)
+                    size=1
+                ),
+                handlePosition=True
             )
 
     def destroy(self):
@@ -835,8 +846,9 @@ class Message(pygame.sprite.Sprite):
                 color2=None,
                 size=0.5,
                 flashFrequency=None,
-                font=pygame.font.Font(),
-                position=None,
+                font='arial',
+                fontSize=24,
+                position=(0, 0),
                 thickness=1,
                 **kwargs
             ):
@@ -850,10 +862,17 @@ class Message(pygame.sprite.Sprite):
         self.colorPairs = None
         self.size = size
         self.flashFrequency = flashFrequency
-        self.font = font
+        if type(font) == str:
+            # Font is a string name of a font - try to find it
+            font_path = pygame.font.match_font(font)
+            self.font = pygame.font.Font(font_path, fontSize)
+        else:
+            # Font is a font object, just use it
+            self.font = font
         self.thickness = thickness
         self.textSize = self.font.size(self.text)
         self.makeColorPairs()
+        self.updateImage()
 
     def update(self):
         self.updateImage()
@@ -876,7 +895,7 @@ class Message(pygame.sprite.Sprite):
                 color = [int(c1 * f + c2 * (1-f)) for c1, c2 in self.colorPairs]
             antialias = False
             self.image = self.font.render(self.text, antialias, color)
-            self.image.set_colorkey('black')
+            # self.image.set_colorkey('black')
 
     def makeColorPairs(self):
         if self.color2 is not None:
@@ -1008,7 +1027,10 @@ class LunarLanderGame:
         self.allEntities.add(sprite)
     def addParticles(self, sprite):
         self.particles.add(sprite)
-    def addMessage(self, sprite):
+    def addMessage(self, sprite, handlePosition=False):
+        if handlePosition:
+            heightOffset = sum([sprite.image.height for sprite in self.messages.sprites()])
+            sprite.position = (self.w/2, self.h/2 + heightOffset)
         self.messages.add(sprite)
     def addVoid(self, sprite):
         raise NotImplementedError
@@ -1025,8 +1047,10 @@ class LunarLanderGame:
                 color=[255, 150, 150],
                 color2=[150, 50, 50],
                 flashFrequency=0.05,
-                size=1)
-            )
+                size=1
+            ),
+            handlePosition=True
+        )
 
     def unpause(self):
         self.paused = False
@@ -1060,8 +1084,10 @@ class LunarLanderGame:
                 color=[255, 150, 150],
                 color2=[150, 50, 50],
                 flashFrequency=0.1,
-                size=1)
-            )
+                size=1
+            ),
+            handlePosition=True
+        )
 
     def run(self):
         while True:
@@ -1112,8 +1138,10 @@ class LunarLanderGame:
                     color=[150, 150, 255],
                     color2=[50, 50, 255],
                     flashFrequency=0.1,
-                    size=1)
-                )
+                    size=1
+                ),
+                handlePosition=True
+            )
             self.addAsteroids(N=10)
         c = np.random.uniform()
         if c < 0.0015:
