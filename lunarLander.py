@@ -246,7 +246,7 @@ class Sprite(pygame.sprite.Sprite):
         self._scale = scale
         if self._lastScale != scale:
             # Scale changed - update image and rect
-            self.image = self.backupImage
+            self.image = self.imageBackup.copy()
         self._lastScale = scale
     def incrementScale(self, deltaScale):
         self.setScale(self._scale + deltaScale)
@@ -422,6 +422,7 @@ class Pad(Sprite):
         self.padColor = self.game.groundColor
         self.padFontColor = [0, 50, 50]
         self.lightRadius = 8
+        self.topMargin = 20
         self.generateImage()
         self.backupImage()
         self.updateMask()
@@ -443,7 +444,7 @@ class Pad(Sprite):
         pygame.draw.circle(
             self.image,
             lightColor,
-            (self.lightRadius, self.lightRadius-1),
+            (self.lightRadius, self.topMargin-1),
             self.lightRadius,
             width=0,
             draw_top_left=True,
@@ -452,7 +453,7 @@ class Pad(Sprite):
         pygame.draw.circle(
             self.image,
             lightColor,
-            (self.width - self.lightRadius, self.lightRadius-1),
+            (self.width - self.lightRadius, self.topMargin-1),
             self.lightRadius,
             width=0,
             draw_top_left=True,
@@ -461,11 +462,11 @@ class Pad(Sprite):
 
     def drawPadBody(self, surface, color):
         # Draw pad body
-        padRect = pygame.Rect((0, self.lightRadius, self.width, self.height))
+        padRect = pygame.Rect((0, self.topMargin, self.width, self.height))
         pygame.draw.rect(surface, color, padRect)
 
     def generateImage(self):
-        self.image = pygame.Surface((self.width, self.height + self.lightRadius))
+        self.image = pygame.Surface((self.width, self.height + self.topMargin))
         self.image.set_colorkey('black')
 
         # Draw landing lights
@@ -478,7 +479,7 @@ class Pad(Sprite):
         padNumberSurface = self.font.render(
             str(self.padNumber), False, self.padFontColor
         )
-        textCenter = (self.image.width/2, self.lightRadius + padNumberSurface.height)
+        textCenter = (self.image.width/2, self.topMargin + padNumberSurface.height)
         textRect = padNumberSurface.get_rect(center=textCenter)
         self.image.blit(padNumberSurface, textRect)
 
@@ -495,7 +496,7 @@ class Pad(Sprite):
 
     def updateRect(self):
         x, y = self.game.world2Screen(*self.position)
-        y -= self.lightRadius
+        y -= self.topMargin
         self.rect = self.image.get_rect(midtop=(x, y))
 
     def update(self):
@@ -510,7 +511,7 @@ class Lander(Sprite):
     def __init__(self, game, *args, **kwargs):
         super().__init__(game, *args, life=100, **kwargs)
         self.thrusterPower = 0.01
-        self.maxFuel = 150 # 15
+        self.maxFuel = 50 # 15
         self.fuel = self.maxFuel
         self.radius = None
         self.exhaustPlume = 0
@@ -534,6 +535,14 @@ class Lander(Sprite):
         self.takeoffGrace = 0
         self.lastPad = None
 
+    def resetState(self):
+        super().resetState()
+        self.isOnPad = False
+        self.takeoffGrace = 0
+        self.phaseOutTime = 0
+        # In case we were killed, add ourself back to the main entity group
+        self.game.allEntities.add(self)
+
     def fireRCS(self, amount):
         if self.fuel > 0:
             power = self.thrusterPower*12
@@ -544,6 +553,8 @@ class Lander(Sprite):
 
     def handleSpriteCollision(self, sprite, collisionPoint=None):
         notes = ''
+        if self.isCrashed():
+            return
         if isinstance(sprite, PowerUp):
             # It's a powerup
             self.capturePowerup(sprite)
