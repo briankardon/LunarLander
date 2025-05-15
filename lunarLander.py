@@ -541,7 +541,7 @@ class Lander(Sprite):
         self.takeoffGrace = 0
         self.phaseOutTime = 0
         # In case we were killed, add ourself back to the main entity group
-        self.game.allEntities.add(self)
+        self.game.addLander(self)
 
     def fireRCS(self, amount):
         if self.fuel > 0:
@@ -581,9 +581,10 @@ class Lander(Sprite):
                         print('lander crashed on pad')
                         self.setCrashed()
         else:
-            self.setCrashed()
-            notes = 'lander hit sprite of type', type(sprite)
-            print(notes)
+            if not sprite.destructing:
+                self.setCrashed()
+                notes = 'lander hit sprite of type', type(sprite)
+                print(notes)
         return notes
     def handleGroundCollision(self, normal=None):
         if self.phaseOutTime > 0:
@@ -983,6 +984,8 @@ class LunarLanderGame:
         self.asteroids = pygame.sprite.Group()
         self.powerups = pygame.sprite.Group()
         self.missiles = pygame.sprite.Group()
+        self.movingEntities = pygame.sprite.Group()
+        self.collisionEntities = pygame.sprite.Group()
         self.allEntities = pygame.sprite.Group()
 
         self.particles = pygame.sprite.Group()
@@ -1008,7 +1011,7 @@ class LunarLanderGame:
         self.voids = []
 
         self.lander = Lander(self)
-        self.allEntities.add(self.lander)
+        self.addLander(self.lander)
 
         self.starfield = None
 
@@ -1026,18 +1029,30 @@ class LunarLanderGame:
 
     def addPad(self, sprite):
         self.pads.add(sprite)
+        self.collisionEntities.add(sprite)
         self.allEntities.add(sprite)
     def addAsteroid(self, sprite):
         self.asteroids.add(sprite)
+        self.movingEntities.add(sprite)
+        self.collisionEntities.add(sprite)
         self.allEntities.add(sprite)
     def addPowerup(self, sprite):
         self.powerups.add(sprite)
+        self.movingEntities.add(sprite)
+        self.collisionEntities.add(sprite)
         self.allEntities.add(sprite)
     def addMissile(self, sprite):
         self.missiles.add(sprite)
+        self.movingEntities.add(sprite)
+        self.collisionEntities.add(sprite)
         self.allEntities.add(sprite)
     def addParticles(self, sprite):
         self.particles.add(sprite)
+        self.movingEntities.add(sprite)
+    def addLander(self, sprite):
+        self.movingEntities.add(sprite)
+        self.collisionEntities.add(sprite)
+        self.allEntities.add(sprite)
     def addMessage(self, sprite, handlePosition=False):
         if handlePosition:
             heightOffset = sum([sprite.image.height for sprite in self.messages.sprites()])
@@ -1340,14 +1355,14 @@ class LunarLanderGame:
         return x < -self.offscreenKillDistance or x > self.offscreenKillDistance or y < -self.offscreenKillDistance or y > self.offscreenKillDistance
 
     def drawSprites(self):
+        self.pads.draw(self.screen)
         self.lander.drawExhaustPlume(self.screen)
-        self.allEntities.draw(self.screen)
-        self.particles.draw(self.screen)
+        self.movingEntities.draw(self.screen)
         self.messages.draw(self.screen)
 
     def checkSpriteCollisions(self):
         # Check asteroid/powerup collision - powerup dies
-        sprites = self.allEntities.sprites()
+        sprites = self.collisionEntities.sprites()
         for k, sprite1 in enumerate(sprites):
             for sprite2 in sprites[k+1:]:
                 collisionPoint = pygame.sprite.collide_mask(sprite1, sprite2)
@@ -1356,7 +1371,7 @@ class LunarLanderGame:
                     sprite2.handleSpriteCollision(sprite1, collisionPoint=collisionPoint)
 
         # Check sprite/ground collision
-        crashed_entities = pygame.sprite.spritecollide(self.ground, self.allEntities, False, collided=pygame.sprite.collide_mask)
+        crashed_entities = pygame.sprite.spritecollide(self.ground, self.collisionEntities, False, collided=pygame.sprite.collide_mask)
         for sprite in crashed_entities:
             sprite.handleGroundCollision()
 
@@ -1600,8 +1615,12 @@ class LunarLanderGame:
             # Refuel
             self.lander.fuel = min([self.lander.maxFuel, self.lander.fuel + 0.2])
 
-        self.allEntities.update()
+        self.pads.update()
+        self.asteroids.update()
+        self.powerups.update()
+        self.missiles.update()
         self.particles.update()
+        self.lander.update()
         self.messages.update()
 
     def clearScreen(self):
